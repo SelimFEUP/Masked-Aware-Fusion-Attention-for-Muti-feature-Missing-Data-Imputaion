@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 
 def fiber_missing_fn(df, fiber_length=12, seed=42):
     rng = np.random.default_rng(seed)
@@ -63,25 +64,16 @@ values = df.values
 T, F = values.shape
 window = 24
 
-# ===============================
-# Train / Test split (time safe)
-# ===============================
 split = int(T * 0.8)
 train_raw = values[:split]
 test_raw  = values[split:]
 
-# ===============================
-# Scaling
-# ===============================
 scaler = MinMaxScaler()
 train_scaled = scaler.fit_transform(train_raw)
 test_scaled  = scaler.transform(test_raw)
 
-# ===============================
-# Inject missing values
-# ===============================
-train_missing, train_eval_mask = random_missing_fn(pd.DataFrame(train_scaled), 0.40, 7)
-test_missing,  test_eval_mask  = random_missing_fn(pd.DataFrame(test_scaled),  0.40, 7)
+train_missing, train_eval_mask = random_missing_fn(pd.DataFrame(train_scaled), 0.20, 7)
+test_missing,  test_eval_mask  = random_missing_fn(pd.DataFrame(test_scaled),  0.20, 7)
 
 train_mask = (~train_missing.isna()).astype(float).values
 test_mask  = (~test_missing.isna()).astype(float).values
@@ -89,10 +81,6 @@ test_mask  = (~test_missing.isna()).astype(float).values
 train_filled = train_missing.fillna(train_missing.mean()).values
 test_filled  = test_missing.fillna(test_missing.mean()).values
 
-
-# ===============================
-# Train / Validation split BEFORE windowing
-# ===============================
 val_split = int(len(train_filled) * 0.9)
 
 train_filled_tr = train_filled[:val_split]
@@ -103,9 +91,6 @@ val_filled_tr = train_filled[val_split - window:]
 val_clean_tr  = train_scaled[val_split - window:]
 val_mask_tr   = train_mask[val_split - window:]
 
-# ===============================
-# Windowing
-# ===============================
 X_train, y_train = create_windows(train_filled_tr, train_clean_tr, train_mask_tr, window)
 X_val,   y_val   = create_windows(val_filled_tr,  val_clean_tr,  val_mask_tr,  window)
 
