@@ -11,6 +11,7 @@ def main():
     model = build_imputation_model(X_train.shape[1:], F)
     model.compile(optimizer='adam', loss=MaskedMSE())
     model.summary()
+    #train_model()   #for start training
     model.load_weights('./models/pems_random.keras')
   
     # ---------- Inference ----------
