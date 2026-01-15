@@ -1,13 +1,17 @@
 import tensorflow as tf
 import pandas as pd
 import numpy as np
-from src.train import train_model
+from src.train import *
 from src.evaluate import *
 from src.preprocessing import *
+from src.model import *
 
 def main():
     # Load the model
-    model.load_weights('models/pems_random.keras')
+    model = build_imputation_model(X_train.shape[1:], F)
+    model.compile(optimizer='adam', loss=MaskedMSE())
+    model.summary()
+    model.load_weights('./models/pems_random.keras')
   
     # ---------- Inference ----------
     preds = model.predict(X_test, batch_size=32)
