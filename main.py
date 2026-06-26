@@ -9,7 +9,7 @@ from src.model import *
 def main():
     # Load the model
     model = build_imputation_model(X_train.shape[1:], F)
-    model.compile(optimizer='adam', loss=MaskedMSE())
+    model.compile(optimizer='adam', loss=MaskedMSE(F))
     model.summary()
     #train_model()   #for start training
     model.load_weights('./models/pems_random.keras')
