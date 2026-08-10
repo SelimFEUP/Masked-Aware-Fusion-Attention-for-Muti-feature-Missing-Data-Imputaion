@@ -1,26 +1,68 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 
-def fiber_missing_fn(df, fiber_length=12, seed=42):
-    rng = np.random.default_rng(seed)
+def create_windows(values_filled, values_clean, masks, window=76, stride=1):
+    X, y = [], []
+    for i in range(0, len(values_filled) - window + 1, stride):
+        X.append(np.concatenate([values_filled[i:i+window], masks[i:i+window]], axis=-1))
+        y.append(np.concatenate([values_clean[i:i+window], masks[i:i+window]], axis=-1))
+    return np.array(X), np.array(y)
 
-    # mask=True means keep value
-    mask = np.ones(df.shape, dtype=bool)
+def reconstruct_from_windows_weighted(preds, T, window, F=207, stride=1, window_type="hanning"):
+    """
+    Reconstructs full time series using Smooth Overlap-Add (OLA) with window weighting.
+    
+    Parameters:
+    - preds: np.ndarray of shape (N, window, F)
+    - T: int, total length of the original time series
+    - window: int, window size (e.g., 76)
+    - F: int, number of features/nodes (e.g., 207)
+    - stride: int, stride used during window creation
+    - window_type: str, 'hanning', 'gaussian', or 'triang'
+    
+    Returns:
+    - Reconstructed time series array of shape (T, F)
+    """
+    series = np.zeros((T, F), dtype=np.float32)
+    weight_sum = np.zeros((T, F), dtype=np.float32)
+    
+    # 1. Generate 1D temporal weighting curve
+    if window_type == "hanning":
+        # Small offset (1e-2) prevents pure zero weights at sequence endpoints
+        w = np.hanning(window) + 1e-2
+    elif window_type == "gaussian":
+        sigma = window / 4.0
+        x = np.arange(window) - (window - 1) / 2.0
+        w = np.exp(-0.5 * (x / sigma) ** 2)
+    elif window_type == "triang":
+        w = np.triang(window) + 1e-2
+    else:
+        w = np.ones(window)
 
-    for col in range(df.shape[1]):
-        if df.shape[0] <= fiber_length:
-            start = 0
+    # Broadcast to match feature dimensions: shape (window, 1)
+    w_expanded = w[:, np.newaxis]
+
+    # 2. Accumulate weighted predictions
+    for i, pred in enumerate(preds):
+        start = i * stride
+        end = start + window
+        
+        if end <= T:
+            series[start:end] += pred * w_expanded
+            weight_sum[start:end] += w_expanded
         else:
-            start = rng.integers(0, df.shape[0] - fiber_length)
+            # Handle tail edge cases where window exceeds total length T
+            valid_len = T - start
+            series[start:T] += pred[:valid_len] * w_expanded[:valid_len]
+            weight_sum[start:T] += w_expanded[:valid_len]
 
-        mask[start:start + fiber_length, col] = False  # False = missing region
+    # 3. Normalize by total accumulated weight
+    return series / np.maximum(weight_sum, 1e-8)
 
-    corrupted = df.copy()
-    corrupted[~mask] = np.nan
-
-    eval_mask = ~mask
-    return corrupted, pd.DataFrame(eval_mask, index=df.index, columns=df.columns)
+def compute_errors(imputed, truth, eval_mask):
+    diff = imputed[eval_mask] - truth[eval_mask]
+    return np.sqrt(np.mean(diff**2)), np.mean(np.abs(diff))
 
 def random_missing_fn(df, p=0.2, block=6, seed=7):
     rng = np.random.default_rng(seed)
@@ -39,59 +81,36 @@ def random_missing_fn(df, p=0.2, block=6, seed=7):
     corrupted[~mask] = np.nan
     return corrupted, pd.DataFrame(~mask, index=df.index, columns=df.columns)
 
-def create_windows(values_filled, values_clean, masks, window=24):
-    X, y = [], []
-    for i in range(len(values_filled) - window):
-        X.append(np.concatenate([values_filled[i:i+window],
-                                 masks[i:i+window]], axis=-1))
-        y.append(np.concatenate([values_clean[i:i+window],
-                                 masks[i:i+window]], axis=-1))
-    return np.array(X), np.array(y)
-
-
-
-def reconstruct_from_windows(preds, T, window):
-    F = preds.shape[2]
-    series = np.zeros((T, F))
-    counts = np.zeros((T, F))
-    for i in range(len(preds)):
-        series[i:i+window] += preds[i]
-        counts[i:i+window] += 1
-    return series / np.maximum(counts, 1)
-
-df = pd.read_csv("data/PEMS_BAY.csv", index_col=0)
+df = pd.read_csv("PEMS_BAY.csv", index_col=0)
 values = df.values
 T, F = values.shape
 window = 24
 
 split = int(T * 0.8)
-train_raw = values[:split]
-test_raw  = values[split:]
+train_raw, test_raw = values[:split], values[split:]
 
-scaler = MinMaxScaler()
+# Switch back to StandardScaler
+scaler = StandardScaler()
 train_scaled = scaler.fit_transform(train_raw)
 test_scaled  = scaler.transform(test_raw)
 
+# Inject missingness (same as before)
 train_missing, train_eval_mask = random_missing_fn(pd.DataFrame(train_scaled), 0.20, 7)
 test_missing,  test_eval_mask  = random_missing_fn(pd.DataFrame(test_scaled),  0.20, 7)
 
 train_mask = (~train_missing.isna()).astype(float).values
 test_mask  = (~test_missing.isna()).astype(float).values
 
-train_filled = train_missing.fillna(train_missing.mean()).values
-test_filled  = test_missing.fillna(test_missing.mean()).values
+# Interpolation is critical now because our model explicitly uses it as a baseline skip-connection
+train_filled = train_missing.interpolate(limit_direction='both').fillna(0).values
+test_filled  = test_missing.interpolate(limit_direction='both').fillna(0).values
 
-val_split = int(len(train_filled) * 0.9)
+val_split_idx = int(len(train_filled) * 0.9)
+train_filled_tr, val_filled_tr = train_filled[:val_split_idx], train_filled[val_split_idx:]
+train_clean_tr, val_clean_tr   = train_scaled[:val_split_idx], train_scaled[val_split_idx:]
+train_mask_tr, val_mask_tr     = train_mask[:val_split_idx], train_mask[val_split_idx:]
 
-train_filled_tr = train_filled[:val_split]
-train_clean_tr  = train_scaled[:val_split]
-train_mask_tr   = train_mask[:val_split]
-
-val_filled_tr = train_filled[val_split - window:]
-val_clean_tr  = train_scaled[val_split - window:]
-val_mask_tr   = train_mask[val_split - window:]
-
-X_train, y_train = create_windows(train_filled_tr, train_clean_tr, train_mask_tr, window)
-X_val,   y_val   = create_windows(val_filled_tr,  val_clean_tr,  val_mask_tr,  window)
-
-X_test,  y_test  = create_windows(test_filled, test_scaled, test_mask, window)
+# Keep Stride=3 for training to prevent overfitting on overlapping sequences
+X_train, y_train = create_windows(train_filled_tr, train_clean_tr, train_mask_tr, window, stride=3)
+X_val,   y_val   = create_windows(val_filled_tr, val_clean_tr, val_mask_tr, window, stride=3)
+X_test,  y_test  = create_windows(test_filled, test_scaled, test_mask, window, stride=1) 
