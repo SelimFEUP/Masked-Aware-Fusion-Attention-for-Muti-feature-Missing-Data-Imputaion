@@ -1,6 +1,20 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+import pickle
+
+
+def load_adj_matrix(adj_path="bay_adj_mx.pkl"):
+    with open(adj_path, 'rb') as f:
+        adj = pickle.load(f)
+    # Usually it's a dict with 'adj_mat' or similar
+    if isinstance(adj, dict):
+        adj = adj['adj_mat'] if 'adj_mat' in adj else adj[list(adj.keys())[0]]
+    adj = np.array(adj, dtype=np.float32)
+    # Normalize adjacency (common practice)
+    adj = adj / (adj.sum(axis=1, keepdims=True) + 1e-8)
+    print(f"Loaded adjacency matrix: {adj.shape}")
+    return tf.convert_to_tensor(adj, dtype=tf.float32)
 
 def create_windows(values_filled, values_clean, masks, window=76, stride=1):
     X, y = [], []
