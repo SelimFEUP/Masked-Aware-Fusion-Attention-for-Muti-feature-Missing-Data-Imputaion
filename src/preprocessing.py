@@ -60,10 +60,6 @@ def reconstruct_from_windows_weighted(preds, T, window, F=207, stride=1, window_
     # 3. Normalize by total accumulated weight
     return series / np.maximum(weight_sum, 1e-8)
 
-def compute_errors(imputed, truth, eval_mask):
-    diff = imputed[eval_mask] - truth[eval_mask]
-    return np.sqrt(np.mean(diff**2)), np.mean(np.abs(diff))
-
 def random_missing_fn(df, p=0.2, block=6, seed=7):
     rng = np.random.default_rng(seed)
     mask = np.ones(df.shape, dtype=bool)
