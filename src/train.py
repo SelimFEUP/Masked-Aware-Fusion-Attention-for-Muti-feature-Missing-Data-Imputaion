@@ -11,48 +11,25 @@ seed = 42
 np.random.seed(seed)
 tf.random.set_seed(seed)
 
-class MaskedMSE(tf.keras.losses.Loss):
-    def __init__(self, F, lambda_obs=0.01, alpha=0.2):
+class MaskedMAE(tf.keras.losses.Loss):
+    def __init__(self, F, lambda_obs=0.3):
         super().__init__()
         self.F = F
         self.lambda_obs = lambda_obs
-        self.alpha = alpha
-
-    def compute_delta_t(self, mask):
-        mask = tf.cast(mask, tf.float32)
-
-        def step(prev, m):
-            return (1.0 - m) * (prev + 1.0)
-
-        delta_t = tf.scan(
-            fn=step,
-            elems=tf.transpose(mask, [1, 0, 2]),
-            initializer=tf.zeros_like(mask[:, 0, :])
-        )
-
-        delta_t = tf.transpose(delta_t, [1, 0, 2])
-        return tf.minimum(delta_t, 12.0)
 
     def call(self, y_true, y_pred):
         values = y_true[..., :self.F]
-        mask   = y_true[..., self.F:]   # observed mask
+        mask = y_true[..., self.F:]
 
-        missing_mask = 1.0 - mask
+        valid_locations = tf.cast(~tf.math.is_nan(values), tf.float32)
+        safe_values = tf.where(tf.math.is_nan(values), tf.zeros_like(values), values)
 
-        delta_t = self.compute_delta_t(mask)
+        missing_mask = (1.0 - mask) * valid_locations
+        observed_mask = mask * valid_locations
 
-        # safer weighting
-        weights = 1.0 + self.alpha * delta_t
-
-        error = tf.square(y_pred - values)
-
-        missing_loss = tf.reduce_sum(error * missing_mask * weights) / (
-            tf.reduce_sum(missing_mask * weights) + 1e-8
-        )
-
-        observed_loss = tf.reduce_sum(error * mask) / (
-            tf.reduce_sum(mask) + 1e-8
-        )
+        abs_error = tf.abs(y_pred - safe_values)
+        missing_loss = tf.reduce_sum(abs_error * missing_mask) / (tf.reduce_sum(missing_mask) + 1e-8)
+        observed_loss = tf.reduce_sum(abs_error * observed_mask) / (tf.reduce_sum(observed_mask) + 1e-8)
 
         return missing_loss + self.lambda_obs * observed_loss
 
